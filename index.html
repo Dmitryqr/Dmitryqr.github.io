@@ -1,526 +1,627 @@
-# drone_web_app.py - ВСЁ В ОДНОМ ФАЙЛЕ
-from flask import Flask, render_template, request, jsonify, send_from_directory
-import json
-import os
-import uuid
-from datetime import datetime
-
-app = Flask(__name__)
-
-# Папки для данных
-os.makedirs('data/routes', exist_ok=True)
-os.makedirs('data/missions', exist_ok=True)
-
-class RouteManager:
-    def __init__(self):
-        self.routes_file = 'data/routes/saved_routes.json'
-        self.load_routes()
-    
-    def load_routes(self):
-        """Загрузка сохраненных маршрутов"""
-        if os.path.exists(self.routes_file):
-            with open(self.routes_file, 'r', encoding='utf-8') as f:
-                self.routes = json.load(f)
-        else:
-            self.routes = {}
-    
-    def save_routes(self):
-        """Сохранение маршрутов"""
-        with open(self.routes_file, 'w', encoding='utf-8') as f:
-            json.dump(self.routes, f, ensure_ascii=False, indent=2)
-    
-    def create_route(self, name, points, altitude=50, speed=10):
-        """Создание нового маршрута"""
-        route_id = str(uuid.uuid4())
-        route = {
-            'id': route_id,
-            'name': name,
-            'points': points,
-            'altitude': altitude,
-            'speed': speed,
-            'created_at': datetime.now().isoformat(),
-            'total_distance': self.calculate_distance(points)
-        }
-        
-        self.routes[route_id] = route
-        self.save_routes()
-        return route
-    
-    def get_route(self, route_id):
-        """Получение маршрута по ID"""
-        return self.routes.get(route_id)
-    
-    def get_all_routes(self):
-        """Получение всех маршрутов"""
-        return list(self.routes.values())
-    
-    def delete_route(self, route_id):
-        """Удаление маршрута"""
-        if route_id in self.routes:
-            del self.routes[route_id]
-            self.save_routes()
-            return True
-        return False
-    
-    def calculate_distance(self, points):
-        """Расчет общей дистанции маршрута"""
-        if len(points) < 2:
-            return 0
-        
-        total = 0
-        for i in range(len(points)-1):
-            p1 = points[i]
-            p2 = points[i+1]
-            # Простой расчет расстояния (в метрах)
-            dist = ((p2['lat'] - p1['lat'])**2 + (p2['lng'] - p1['lng'])**2)**0.5 * 111000
-            total += dist
-        
-        return round(total, 2)
-
-class DroneSimulator:
-    def __init__(self):
-        self.current_mission = None
-    
-    def execute_mission(self, route):
-        """Симуляция выполнения миссии"""
-        mission_id = str(uuid.uuid4())
-        mission = {
-            'id': mission_id,
-            'route_id': route['id'],
-            'route_name': route['name'],
-            'status': 'completed',
-            'started_at': datetime.now().isoformat(),
-            'completed_at': datetime.now().isoformat(),
-            'total_points': len(route['points']),
-            'total_distance': route['total_distance']
-        }
-        
-        # Сохраняем миссию
-        mission_file = f"data/missions/{mission_id}.json"
-        with open(mission_file, 'w', encoding='utf-8') as f:
-            json.dump(mission, f, ensure_ascii=False, indent=2)
-        
-        return mission
-
-# Инициализация менеджеров
-route_manager = RouteManager()
-drone_simulator = DroneSimulator()
-
-# HTML шаблон
-HTML_TEMPLATE = '''
 <!DOCTYPE html>
-<html lang="ru">
+<html>
 <head>
+    <title>AeroScout Dashboard</title>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Drone Route Planner</title>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { 
-            font-family: Arial, sans-serif; 
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+            line-height: 1.6;
             min-height: 100vh;
         }
+
         .container {
-            display: flex;
-            height: 100vh;
-        }
-        .sidebar {
-            width: 350px;
-            background: white;
+            max-width: 1400px;
+            margin: 0 auto;
             padding: 20px;
-            box-shadow: 2px 0 10px rgba(0,0,0,0.1);
-            overflow-y: auto;
         }
-        .map-container {
-            flex: 1;
-            position: relative;
-        }
-        #map {
-            height: 100%;
-            width: 100%;
-        }
-        h1 {
-            color: #333;
-            margin-bottom: 20px;
+
+        header {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 30px;
+            border-radius: 20px;
+            margin-bottom: 30px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            backdrop-filter: blur(10px);
             text-align: center;
         }
-        .form-group {
-            margin-bottom: 15px;
+
+        h1 {
+            color: #2c3e50;
+            font-size: 2.5em;
+            margin-bottom: 10px;
         }
-        label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: bold;
-            color: #555;
+
+        .subtitle {
+            color: #7f8c8d;
+            font-size: 1.2em;
         }
-        input, select, button {
-            width: 100%;
-            padding: 10px;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            font-size: 14px;
+
+        .controls {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin: 20px 0;
+            flex-wrap: wrap;
         }
-        button {
-            background: #4CAF50;
+
+        .btn {
+            background: #3498db;
             color: white;
             border: none;
+            padding: 12px 25px;
+            border-radius: 25px;
             cursor: pointer;
-            margin-top: 5px;
+            font-size: 14px;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
-        button:hover { background: #45a049; }
-        button.secondary { background: #2196F3; }
-        button.secondary:hover { background: #1976D2; }
-        button.danger { background: #f44336; }
-        button.danger:hover { background: #d32f2f; }
-        .route-list {
-            margin-top: 20px;
+
+        .btn:hover {
+            background: #2980b9;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
         }
-        .route-item {
-            background: #f9f9f9;
-            padding: 10px;
-            margin-bottom: 10px;
-            border-radius: 5px;
-            border-left: 4px solid #4CAF50;
+
+        .btn-danger {
+            background: #e74c3c;
         }
-        .route-name {
+
+        .btn-success {
+            background: #27ae60;
+        }
+
+        .btn-warning {
+            background: #f39c12;
+        }
+
+        .dashboard {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 25px;
+            margin-bottom: 30px;
+        }
+
+        @media (max-width: 768px) {
+            .dashboard {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .panel {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 25px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            backdrop-filter: blur(10px);
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 15px;
+            text-align: center;
+            transition: transform 0.3s ease;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-5px);
+        }
+
+        .stat-number {
+            font-size: 2.2em;
             font-weight: bold;
-            color: #333;
+            display: block;
+            margin-bottom: 5px;
         }
-        .route-info {
-            font-size: 12px;
-            color: #666;
-            margin-top: 5px;
+
+        .stat-label {
+            font-size: 0.9em;
+            opacity: 0.9;
         }
-        .coordinates-display {
-            background: #f5f5f5;
-            padding: 10px;
+
+        .mission-item, .defect-item {
+            background: #f8f9fa;
+            padding: 20px;
+            margin-bottom: 15px;
+            border-radius: 12px;
+            border-left: 5px solid #3498db;
+            transition: all 0.3s ease;
+        }
+
+        .mission-item:hover, .defect-item:hover {
+            transform: translateX(5px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+
+        .defect-crack {
+            border-left-color: #e74c3c;
+            background: #ffe6e6;
+        }
+
+        .defect-rust {
+            border-left-color: #e67e22;
+            background: #fff3e6;
+        }
+
+        .mission-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .mission-id {
+            font-weight: bold;
+            color: #2c3e50;
+            font-size: 1.1em;
+        }
+
+        .mission-status {
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.8em;
+            font-weight: bold;
+        }
+
+        .status-completed {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status-active {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+
+        .defect-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .defect-type {
+            font-weight: bold;
+            font-size: 1.1em;
+        }
+
+        .defect-confidence {
+            font-weight: bold;
+        }
+
+        .confidence-high { color: #e74c3c; }
+        .confidence-medium { color: #e67e22; }
+        .confidence-low { color: #f39c12; }
+
+        .map-container {
+            height: 300px;
+            background: #e9ecef;
+            border-radius: 10px;
+            margin-top: 15px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #6c757d;
+            font-size: 1.1em;
+        }
+
+        .live-feed {
+            background: #2c3e50;
+            color: white;
+            padding: 15px;
+            border-radius: 10px;
+            margin-top: 15px;
+            font-family: 'Courier New', monospace;
+        }
+
+        .log-entry {
+            margin-bottom: 5px;
+            padding: 5px;
             border-radius: 5px;
-            margin-top: 10px;
-            font-family: monospace;
-            font-size: 12px;
-            max-height: 100px;
-            overflow-y: auto;
+        }
+
+        .log-info { background: rgba(52, 152, 219, 0.3); }
+        .log-warning { background: rgba(243, 156, 18, 0.3); }
+        .log-error { background: rgba(231, 76, 60, 0.3); }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #7f8c8d;
+        }
+
+        .error {
+            background: #e74c3c;
+            color: white;
+            padding: 15px;
+            border-radius: 10px;
+            margin: 15px 0;
+            text-align: center;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+
+        .pulse {
+            animation: pulse 2s infinite;
+        }
+
+        .drone-animation {
+            text-align: center;
+            font-size: 3em;
+            margin: 20px 0;
         }
     </style>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
 </head>
 <body>
     <div class="container">
-        <!-- Боковая панель -->
-        <div class="sidebar">
-            <h1>🎯 Планировщик маршрутов дрона</h1>
+        <header>
+            <h1>🚁 AeroScout Dashboard</h1>
+            <p class="subtitle">Система автономного мониторинга инфраструктуры</p>
             
-            <!-- Создание маршрута -->
-            <div class="form-group">
-                <label for="routeName">Название маршрута:</label>
-                <input type="text" id="routeName" placeholder="Обследование парка">
+            <div class="controls">
+                <button class="btn btn-success" onclick="startMission()">
+                    🚀 Запуск миссии
+                </button>
+                <button class="btn btn-warning" onclick="emergencyStop()">
+                    ⚠️ Аварийная остановка
+                </button>
+                <button class="btn" onclick="refreshData()">
+                    🔄 Обновить данные
+                </button>
+                <button class="btn" onclick="toggleLiveFeed()">
+                    📡 Прямая трансляция
+                </button>
             </div>
-            
-            <div class="form-group">
-                <label for="altitude">Высота полета (м):</label>
-                <input type="number" id="altitude" value="50" min="10" max="200">
+        </header>
+
+        <div class="stats-grid" id="statsGrid">
+            <div class="stat-card">
+                <span class="stat-number" id="totalMissions">0</span>
+                <span class="stat-label">Всего миссий</span>
             </div>
-            
-            <div class="form-group">
-                <label for="speed">Скорость (м/с):</label>
-                <input type="number" id="speed" value="10" min="1" max="20">
+            <div class="stat-card">
+                <span class="stat-number" id="totalDefects">0</span>
+                <span class="stat-label">Найдено дефектов</span>
             </div>
-            
-            <button onclick="startDrawing()">🎯 Начать рисование маршрута</button>
-            <button onclick="clearRoute()" class="secondary">🗑️ Очистить маршрут</button>
-            <button onclick="saveRoute()" class="secondary">💾 Сохранить маршрут</button>
-            
-            <!-- Отображение координат -->
-            <div class="coordinates-display" id="coordinates">
-                Координаты точек будут отображаться здесь...
+            <div class="stat-card">
+                <span class="stat-number" id="flightHours">0</span>
+                <span class="stat-label">Часов полёта</span>
             </div>
-            
-            <!-- Список маршрутов -->
-            <div class="route-list">
-                <h3>📁 Сохраненные маршруты:</h3>
-                <div id="routesList"></div>
+            <div class="stat-card">
+                <span class="stat-number" id="crackCount">0</span>
+                <span class="stat-label">Трещин обнаружено</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-number" id="rustCount">0</span>
+                <span class="stat-label">Участков ржавчины</span>
             </div>
         </div>
-        
-        <!-- Карта -->
-        <div class="map-container">
-            <div id="map"></div>
+
+        <div class="dashboard">
+            <div class="panel">
+                <h2>📋 Активные миссии</h2>
+                <div id="missionsList">
+                    <div class="loading">Загрузка миссий...</div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>🔍 Последние дефекты</h2>
+                <div id="defectsList">
+                    <div class="loading">Загрузка дефектов...</div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>🗺️ Карта полётов</h2>
+                <div class="map-container">
+                    🗺️ Интерактивная карта полётов
+                    <br><small>(Для реализации подключите Google Maps API)</small>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>📊 Аналитика в реальном времени</h2>
+                <div class="live-feed" id="liveFeed" style="display: none;">
+                    <div class="log-entry log-info">🟢 Система инициализирована</div>
+                    <div class="log-entry log-info">📡 Поиск дронов...</div>
+                    <div class="log-entry log-warning">⚠️ Низкий заряд батареи: 23%</div>
+                </div>
+                <div id="analyticsPlaceholder">
+                    <div class="drone-animation">🚁</div>
+                    <p style="text-align: center;">Готов к приёму телеметрии</p>
+                </div>
+            </div>
         </div>
     </div>
 
-    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
     <script>
-        let map;
-        let routePoints = [];
-        let polyline = null;
-        let isDrawing = false;
+        // 📊 Данные приложения
+        const appState = {
+            missions: [],
+            defects: [],
+            stats: {},
+            liveFeedActive: false,
+            refreshInterval: null
+        };
 
-        // Инициализация карты
-        function initMap() {
-            map = L.map('map').setView([55.7558, 37.6173], 13); // Москва по умолчанию
-            
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                attribution: '© OpenStreetMap contributors'
-            }).addTo(map);
-            
-            // Загрузка сохраненных маршрутов
-            loadRoutes();
-        }
-
-        // Начать рисование маршрута
-        function startDrawing() {
-            isDrawing = true;
-            routePoints = [];
-            if (polyline) {
-                map.removeLayer(polyline);
-            }
-            updateCoordinatesDisplay();
-            alert('🗺️ Кликайте на карту чтобы добавить точки маршрута. Двойной клик - завершить.');
-        }
-
-        // Добавление обработчика кликов
-        map.on('click', function(e) {
-            if (!isDrawing) return;
-            
-            routePoints.push({
-                lat: e.latlng.lat,
-                lng: e.latlng.lng
-            });
-            
-            // Обновление линии маршрута
-            if (polyline) {
-                map.removeLayer(polyline);
-            }
-            
-            if (routePoints.length > 1) {
-                polyline = L.polyline(routePoints, {color: 'blue'}).addTo(map);
-            }
-            
-            // Добавление маркеров
-            L.marker(e.latlng).addTo(map)
-                .bindPopup(`Точка ${routePoints.length}`)
-                .openPopup();
-            
-            updateCoordinatesDisplay();
-        });
-
-        // Двойной клик - завершить маршрут
-        map.on('dblclick', function() {
-            if (isDrawing && routePoints.length > 1) {
-                isDrawing = false;
-                alert(`✅ Маршрут завершен! Точек: ${routePoints.length}`);
-            }
-        });
-
-        // Обновление отображения координат
-        function updateCoordinatesDisplay() {
-            const coordsDiv = document.getElementById('coordinates');
-            coordsDiv.innerHTML = routePoints.map((point, index) => 
-                `${index + 1}. ${point.lat.toFixed(6)}, ${point.lng.toFixed(6)}`
-            ).join('<br>') || 'Координаты точек будут отображаться здесь...';
-        }
-
-        // Очистка маршрута
-        function clearRoute() {
-            routePoints = [];
-            if (polyline) {
-                map.removeLayer(polyline);
-                polyline = null;
-            }
-            map.eachLayer(layer => {
-                if (layer instanceof L.Marker) {
-                    map.removeLayer(layer);
+        // 🎯 Тестовые данные
+        const mockData = {
+            stats: {
+                total_missions: 15,
+                total_defects: 47,
+                total_flight_hours: 8.5,
+                defects_by_type: {
+                    crack: 28,
+                    rust: 19
                 }
-            });
-            updateCoordinatesDisplay();
-            isDrawing = false;
+            },
+            missions: [
+                {
+                    id: "mission_001",
+                    drone_id: "pioneer_001",
+                    location: "Строительная площадка №1",
+                    total_images: 45,
+                    defects_found: 3,
+                    flight_duration: 1250,
+                    status: "completed",
+                    created_at: new Date().toISOString()
+                },
+                {
+                    id: "mission_002", 
+                    drone_id: "pioneer_001",
+                    location: "Мост через реку",
+                    total_images: 67,
+                    defects_found: 7,
+                    flight_duration: 1850,
+                    status: "active",
+                    created_at: new Date(Date.now() - 300000).toISOString()
+                }
+            ],
+            defects: [
+                {
+                    id: "defect_001",
+                    type: "crack",
+                    confidence: 0.87,
+                    location: "55.7558, 37.6173",
+                    mission_id: "mission_001",
+                    timestamp: new Date().toISOString()
+                },
+                {
+                    id: "defect_002",
+                    type: "rust", 
+                    confidence: 0.92,
+                    location: "55.7559, 37.6174",
+                    mission_id: "mission_001",
+                    timestamp: new Date().toISOString()
+                },
+                {
+                    id: "defect_003",
+                    type: "crack",
+                    confidence: 0.78,
+                    location: "55.7560, 37.6175", 
+                    mission_id: "mission_002",
+                    timestamp: new Date().toISOString()
+                }
+            ]
+        };
+
+        // 🚀 Функции управления
+        function startMission() {
+            addLog("🚀 Запуск новой миссии...", "info");
+            showNotification("Миссия запущена!", "success");
+            
+            // Имитация запуска
+            setTimeout(() => {
+                addLog("✅ Миссия успешно запущена", "info");
+                refreshData();
+            }, 2000);
         }
 
-        // Сохранение маршрута
-        function saveRoute() {
-            const name = document.getElementById('routeName').value;
-            const altitude = parseInt(document.getElementById('altitude').value);
-            const speed = parseInt(document.getElementById('speed').value);
+        function emergencyStop() {
+            addLog("🛑 АВАРИЙНАЯ ОСТАНОВКА!", "error");
+            showNotification("Аварийная остановка активирована!", "error");
+        }
+
+        function refreshData() {
+            addLog("🔄 Обновление данных...", "info");
+            loadData();
+        }
+
+        function toggleLiveFeed() {
+            appState.liveFeedActive = !appState.liveFeedActive;
+            const feed = document.getElementById('liveFeed');
+            const analytics = document.getElementById('analyticsPlaceholder');
             
-            if (!name) {
-                alert('⚠️ Введите название маршрута!');
+            if (appState.liveFeedActive) {
+                feed.style.display = 'block';
+                analytics.style.display = 'none';
+                addLog("📡 Прямая трансляция активирована", "info");
+            } else {
+                feed.style.display = 'none';
+                analytics.style.display = 'block';
+            }
+        }
+
+        function addLog(message, type = "info") {
+            if (!appState.liveFeedActive) return;
+            
+            const feed = document.getElementById('liveFeed');
+            const logEntry = document.createElement('div');
+            logEntry.className = `log-entry log-${type}`;
+            logEntry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            
+            feed.appendChild(logEntry);
+            feed.scrollTop = feed.scrollHeight;
+        }
+
+        function showNotification(message, type = "info") {
+            // Создаем уведомление
+            const notification = document.createElement('div');
+            notification.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                padding: 15px 20px;
+                border-radius: 10px;
+                color: white;
+                font-weight: bold;
+                z-index: 1000;
+                animation: slideIn 0.3s ease;
+                ${type === 'success' ? 'background: #27ae60;' : ''}
+                ${type === 'error' ? 'background: #e74c3c;' : ''}
+                ${type === 'info' ? 'background: #3498db;' : ''}
+            `;
+            notification.textContent = message;
+            
+            document.body.appendChild(notification);
+            
+            // Удаляем через 3 секунды
+            setTimeout(() => {
+                notification.remove();
+            }, 3000);
+        }
+
+        // 📊 Функции отрисовки
+        function renderStats(stats) {
+            document.getElementById('totalMissions').textContent = stats.total_missions || 0;
+            document.getElementById('totalDefects').textContent = stats.total_defects || 0;
+            document.getElementById('flightHours').textContent = stats.total_flight_hours || 0;
+            document.getElementById('crackCount').textContent = stats.defects_by_type?.crack || 0;
+            document.getElementById('rustCount').textContent = stats.defects_by_type?.rust || 0;
+        }
+
+        function renderMissions(missions) {
+            const container = document.getElementById('missionsList');
+            
+            if (!missions || missions.length === 0) {
+                container.innerHTML = '<div class="mission-item">Миссии не найдены</div>';
                 return;
             }
+
+            container.innerHTML = missions.map(mission => `
+                <div class="mission-item">
+                    <div class="mission-header">
+                        <span class="mission-id">${mission.id}</span>
+                        <span class="mission-status status-${mission.status}">
+                            ${mission.status === 'active' ? 'АКТИВНА' : 'ЗАВЕРШЕНА'}
+                        </span>
+                    </div>
+                    <div><strong>Локация:</strong> ${mission.location}</div>
+                    <div><strong>Дрон:</strong> ${mission.drone_id}</div>
+                    <div><strong>Снимков:</strong> ${mission.total_images} | <strong>Дефектов:</strong> ${mission.defects_found}</div>
+                    <div><strong>Длительность:</strong> ${Math.round(mission.flight_duration/60)} минут</div>
+                </div>
+            `).join('');
+        }
+
+        function renderDefects(defects) {
+            const container = document.getElementById('defectsList');
             
-            if (routePoints.length < 2) {
-                alert('⚠️ Добавьте хотя бы 2 точки на карту!');
+            if (!defects || defects.length === 0) {
+                container.innerHTML = '<div class="defect-item">Дефекты не обнаружены</div>';
                 return;
             }
+
+            container.innerHTML = defects.map(defect => {
+                const confidenceClass = defect.confidence > 0.8 ? 'high' : defect.confidence > 0.6 ? 'medium' : 'low';
+                const defectClass = defect.type === 'crack' ? 'defect-crack' : 'defect-rust';
+                
+                return `
+                    <div class="defect-item ${defectClass}">
+                        <div class="defect-header">
+                            <span class="defect-type">
+                                ${defect.type === 'crack' ? '🔄 ТРЕЩИНА' : '🟫 РЖАВЧИНА'}
+                            </span>
+                            <span class="defect-confidence confidence-${confidenceClass}">
+                                ${(defect.confidence * 100).toFixed(1)}%
+                            </span>
+                        </div>
+                        <div><strong>Координаты:</strong> ${defect.location}</div>
+                        <div><strong>Миссия:</strong> ${defect.mission_id}</div>
+                        <div><strong>Время:</strong> ${new Date(defect.timestamp).toLocaleString()}</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // 📡 Загрузка данных
+        async function loadData() {
+            try {
+                // Имитация загрузки с API
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+                // Используем тестовые данные
+                appState.stats = mockData.stats;
+                appState.missions = mockData.missions;
+                appState.defects = mockData.defects;
+                
+                renderStats(appState.stats);
+                renderMissions(appState.missions);
+                renderDefects(appState.defects);
+                
+                addLog("✅ Данные успешно загружены", "info");
+                
+            } catch (error) {
+                console.error('Ошибка загрузки:', error);
+                addLog("❌ Ошибка загрузки данных", "error");
+            }
+        }
+
+        // 🎯 Инициализация
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log("🚀 AeroScout Dashboard запущен!");
+            loadData();
             
-            fetch('/api/routes', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    name: name,
-                    points: routePoints,
-                    altitude: altitude,
-                    speed: speed
-                })
-            })
-            .then(response => response.json())
-            .then(data => {
-                alert('✅ Маршрут сохранен!');
-                loadRoutes();
-                clearRoute();
-            })
-            .catch(error => {
-                alert('❌ Ошибка сохранения: ' + error);
-            });
-        }
-
-        // Загрузка маршрутов
-        function loadRoutes() {
-            fetch('/api/routes')
-                .then(response => response.json())
-                .then(routes => {
-                    const routesList = document.getElementById('routesList');
-                    routesList.innerHTML = '';
-                    
-                    routes.forEach(route => {
-                        const routeDiv = document.createElement('div');
-                        routeDiv.className = 'route-item';
-                        routeDiv.innerHTML = `
-                            <div class="route-name">${route.name}</div>
-                            <div class="route-info">
-                                Точек: ${route.points.length} | 
-                                Дистанция: ${route.total_distance}м |
-                                Высота: ${route.altitude}м
-                            </div>
-                            <button onclick="loadRoute('${route.id}')" class="secondary">📁 Загрузить</button>
-                            <button onclick="executeMission('${route.id}')">🚀 Выполнить</button>
-                            <button onclick="deleteRoute('${route.id}')" class="danger">🗑️ Удалить</button>
-                        `;
-                        routesList.appendChild(routeDiv);
-                    });
-                });
-        }
-
-        // Загрузка маршрута на карту
-        function loadRoute(routeId) {
-            fetch(`/api/routes/${routeId}`)
-                .then(response => response.json())
-                .then(route => {
-                    clearRoute();
-                    routePoints = route.points;
-                    
-                    // Отображение маршрута
-                    if (routePoints.length > 1) {
-                        polyline = L.polyline(routePoints, {color: 'green'}).addTo(map);
-                        map.fitBounds(polyline.getBounds());
-                    }
-                    
-                    // Добавление маркеров
-                    routePoints.forEach((point, index) => {
-                        L.marker([point.lat, point.lng]).addTo(map)
-                            .bindPopup(`Точка ${index + 1}`);
-                    });
-                    
-                    updateCoordinatesDisplay();
-                    document.getElementById('routeName').value = route.name;
-                    document.getElementById('altitude').value = route.altitude;
-                    document.getElementById('speed').value = route.speed;
-                });
-        }
-
-        // Выполнение миссии
-        function executeMission(routeId) {
-            if (!confirm('🚀 Запустить миссию с этим маршрутом?')) return;
+            // Автообновление каждые 30 секунд
+            appState.refreshInterval = setInterval(refreshData, 30000);
             
-            fetch(`/api/missions/execute`, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({route_id: routeId})
-            })
-            .then(response => response.json())
-            .then(mission => {
-                alert(`✅ Миссия выполнена!\\nТочек: ${mission.total_points}\\nДистанция: ${mission.total_distance}м`);
-            })
-            .catch(error => {
-                alert('❌ Ошибка выполнения миссии: ' + error);
-            });
-        }
+            // Имитация живой телеметрии
+            setInterval(() => {
+                if (appState.liveFeedActive) {
+                    const messages = [
+                        "📡 Получена телеметрия с дрона",
+                        "🛰️ GPS координаты обновлены", 
+                        "🔋 Заряд батареи: 67%",
+                        "🌡️ Температура: 23°C",
+                        "📸 Сделано 5 снимков"
+                    ];
+                    const randomMessage = messages[Math.floor(Math.random() * messages.length)];
+                    addLog(randomMessage, "info");
+                }
+            }, 5000);
+        });
 
-        // Удаление маршрута
-        function deleteRoute(routeId) {
-            if (!confirm('🗑️ Удалить этот маршрут?')) return;
-            
-            fetch(`/api/routes/${routeId}`, {method: 'DELETE'})
-                .then(response => response.json())
-                .then(result => {
-                    if (result.success) {
-                        alert('✅ Маршрут удален!');
-                        loadRoutes();
-                    }
-                });
-        }
-
-        // Инициализация при загрузке
-        document.addEventListener('DOMContentLoaded', initMap);
-    </script>
-</body>
-</html>
-'''
-
-# API маршруты
-@app.route('/')
-def index():
-    return HTML_TEMPLATE
-
-@app.route('/api/routes', methods=['GET'])
-def get_routes():
-    """Получить все маршруты"""
-    return jsonify(route_manager.get_all_routes())
-
-@app.route('/api/routes', methods=['POST'])
-def create_route():
-    """Создать новый маршрут"""
-    data = request.json
-    route = route_manager.create_route(
-        name=data['name'],
-        points=data['points'],
-        altitude=data.get('altitude', 50),
-        speed=data.get('speed', 10)
-    )
-    return jsonify(route)
-
-@app.route('/api/routes/<route_id>', methods=['GET'])
-def get_route(route_id):
-    """Получить маршрут по ID"""
-    route = route_manager.get_route(route_id)
-    if route:
-        return jsonify(route)
-    return jsonify({'error': 'Маршрут не найден'}), 404
-
-@app.route('/api/routes/<route_id>', methods=['DELETE'])
-def delete_route(route_id):
-    """Удалить маршрут"""
-    if route_manager.delete_route(route_id):
-        return jsonify({'success': True})
-    return jsonify({'error': 'Маршрут не найден'}), 404
-
-@app.route('/api/missions/execute', methods=['POST'])
-def execute_mission():
-    """Выполнить миссию"""
-    data = request.json
-    route = route_manager.get_route(data['route_id'])
-    
-    if not route:
-        return jsonify({'error': 'Маршрут не найден'}), 404
-    
-    mission = drone_simulator.execute_mission(route)
-    return jsonify(mission)
-
-if __name__ == '__main__':
-    print("🚀 Запуск Drone Route Planner...")
-    print("📡 Сервер доступен по адресу: http://localhost:5000")
-    print("🗺️ Откройте браузер и перейдите по ссылке выше")
-    app.run(debug=True, host='0.0.0.0', port=5000)
+        // Очистка при размонтировании
+        window.addEventListener('beforeunload', () => {
+            if (appState.refreshInterval) {
+                clearInterval(appState.refreshInterval);
+            }
+        });
     </script>
 </body>
 </html>
